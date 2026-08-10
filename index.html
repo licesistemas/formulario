@@ -177,11 +177,25 @@ input:focus{border-color:var(--yellow)}
   <div class="footer">SOOLARWIN • Energia solar & transição energética</div>
 </main>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
+import { getFirestore, collection, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js";
+
 const CONFIG = {
   whatsappEmpresa: "5547999999999",
-  webhookUrl: ""
+  companyId: "company-demo",
+  firebase: {
+    apiKey: "AIzaSyCYSQfnPLyV9B6osiZhsLYYrF64YLhGkMA",
+    authDomain: "energiasolar-67b14.firebaseapp.com",
+    databaseURL: "https://energiasolar-67b14-default-rtdb.firebaseio.com",
+    projectId: "energiasolar-67b14",
+    messagingSenderId: "394822890491",
+    appId: "1:394822890491:web:5afc55e01902bbf142915e"
+  }
 };
+
+const firebaseApp = initializeApp(CONFIG.firebase);
+const db = getFirestore(firebaseApp);
 
 const form=document.getElementById("leadForm");
 const steps=[...document.querySelectorAll(".step")];
@@ -204,46 +218,114 @@ document.querySelectorAll("[data-choice]").forEach(group=>{
   group.querySelectorAll(".option").forEach(btn=>{
     btn.addEventListener("click",()=>{
       group.querySelectorAll(".option").forEach(x=>x.classList.remove("selected"));
-      btn.classList.add("selected");hidden.value=btn.dataset.value;
-    })
-  })
+      btn.classList.add("selected");
+      hidden.value=btn.dataset.value;
+    });
+  });
 });
 
 function valid(i){
   const req=[...steps[i].querySelectorAll("[required]")];
-  for(const el of req){if(!el.value.trim()){if(el.type!=="hidden")el.focus();return false}}
+  for(const el of req){
+    if(!String(el.value||"").trim()){
+      if(el.type!=="hidden") el.focus();
+      return false;
+    }
+  }
   return true;
 }
+
 function show(i){
-  current=i;steps.forEach((s,n)=>s.classList.toggle("active",n===i));
+  current=i;
+  steps.forEach((s,n)=>s.classList.toggle("active",n===i));
   const p=Math.round(((i+1)/3)*100);
-  bar.style.width=p+"%";stepLabel.textContent=`Pergunta ${i+1} de 3`;percent.textContent=p+"%";
+  bar.style.width=p+"%";
+  stepLabel.textContent=`Pergunta ${i+1} de 3`;
+  percent.textContent=p+"%";
   back.style.visibility=i===0?"hidden":"visible";
   next.style.display=i===2?"none":"block";
   submit.style.display=i===2?"block":"none";
 }
+
 next.onclick=()=>{if(valid(current))show(current+1)};
 back.onclick=()=>{if(current>0)show(current-1)};
 
+function calculateScore(monthlyBill, type){
+  let score = 45;
+  const bill = Number(monthlyBill||0);
+  if(bill >= 1500) score += 35;
+  else if(bill >= 800) score += 28;
+  else if(bill >= 500) score += 20;
+  else if(bill >= 300) score += 12;
+  else score += 5;
+
+  if(type === "Empresa / Comércio" || type === "Propriedade rural") score += 10;
+  else if(type === "Residência") score += 7;
+
+  return Math.max(0,Math.min(100,score));
+}
+
+async function saveLeadToCRM(d){
+  const leadRef = doc(collection(db,"leads"));
+  const now = new Date().toISOString();
+  const monthlyBill = Math.round(Number(d.conta_mensal||0));
+  const score = calculateScore(monthlyBill,d.tipo);
+
+  const lead = {
+    id: leadRef.id,
+    companyId: CONFIG.companyId,
+    name: String(d.nome||"").trim().slice(0,100),
+    phone: String(d.whatsapp||"").trim().slice(0,30),
+    email: "",
+    city: String(d.cidade||"").trim().slice(0,100),
+    source: "Instagram / Formulário",
+    stage: "Novo Lead",
+    estimatedValue: 0,
+    score,
+    owner: "Atendimento",
+    notes: `Lead recebido automaticamente pelo formulário Soolarwin. Perfil: ${String(d.tipo||"")}. Conta média informada: ${brl(monthlyBill)}.`,
+    createdAt: now,
+    updatedAt: now,
+    monthlyBill,
+    installationType: String(d.tipo||"").slice(0,80),
+    originUrl: location.href.slice(0,500)
+  };
+
+  await setDoc(leadRef, lead);
+  return lead;
+}
+
 form.onsubmit=async e=>{
- e.preventDefault();if(!valid(2))return;
- const d=Object.fromEntries(new FormData(form).entries());
- const payload={...d,origem:"Instagram Bio",criado_em:new Date().toISOString()};
- if(CONFIG.webhookUrl){
-   try{await fetch(CONFIG.webhookUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})}catch(err){console.warn(err)}
- }
- const msg=encodeURIComponent(`Olá! Preenchi a simulação da Soolarwin.
+  e.preventDefault();
+  if(!valid(2)) return;
+
+  const d=Object.fromEntries(new FormData(form).entries());
+  const originalText=submit.textContent;
+  submit.disabled=true;
+  submit.textContent="Enviando...";
+
+  try{
+    await saveLeadToCRM(d);
+
+    const msg=encodeURIComponent(`Olá! Preenchi a simulação da Soolarwin.
 
 Nome: ${d.nome}
 WhatsApp: ${d.whatsapp}
 Cidade: ${d.cidade}
 Perfil: ${d.tipo}
 Conta média: ${brl(d.conta_mensal)}`);
- document.getElementById("wa").href=`https://wa.me/${CONFIG.whatsappEmpresa}?text=${msg}`;
- form.style.display="none";
- document.querySelector(".topline").style.display="none";
- document.querySelector(".progress").style.display="none";
- document.getElementById("success").style.display="block";
+
+    document.getElementById("wa").href=`https://wa.me/${CONFIG.whatsappEmpresa}?text=${msg}`;
+    form.style.display="none";
+    document.querySelector(".topline").style.display="none";
+    document.querySelector(".progress").style.display="none";
+    document.getElementById("success").style.display="block";
+  }catch(err){
+    console.error("Falha ao cadastrar lead no CRM:",err);
+    alert("Não foi possível enviar sua solicitação agora. Tente novamente em alguns instantes.");
+    submit.disabled=false;
+    submit.textContent=originalText;
+  }
 };
 </script>
 </body>
